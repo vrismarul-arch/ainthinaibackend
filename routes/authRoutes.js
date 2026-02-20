@@ -1,0 +1,11 @@
+const express = require('express');
+const router = express.Router();
+const auth = require('../controllers/authController');
+
+router.post('/register', auth.register);
+router.post('/login', auth.login);
+
+// ✅ ADD THIS
+router.post('/create-admin', auth.createAdmin);
+
+module.exports = router;
