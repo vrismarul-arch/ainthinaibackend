@@ -98,18 +98,24 @@ const deleteImages = async (urls = []) => {
 //
 // ===== CREATE TOUR =====
 //
+//
+// ===== CREATE TOUR =====
+//
 exports.createTour = async (req, res) => {
   try {
-
     const body = req.body;
     const files = req.files || {};
     const id = uuidv4();
 
+    const clean = (v) => (v === undefined || v === "" ? null : v);
+
+    // Upload main image
     let mainImage = null;
     if (files.main_image) {
       mainImage = await uploadImage(files.main_image[0]);
     }
 
+    // Upload gallery images
     let gallery = [];
     if (files.gallery_images) {
       for (const file of files.gallery_images) {
@@ -125,21 +131,21 @@ exports.createTour = async (req, res) => {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id,
-        body.category_id || null,
-        body.title,
-        body.place,
-        body.state,
-        body.district,
-        body.description,
-        body.location,
-        body.adult_price,
-        body.child_price,
-        mainImage,
+        clean(body.category_id),
+        clean(body.title),
+        clean(body.place),
+        clean(body.state),
+        clean(body.district),
+        clean(body.description),
+        clean(body.location),
+        clean(body.adult_price),
+        clean(body.child_price),
+        clean(mainImage),
         JSON.stringify(gallery),
-        JSON.stringify(parseJSON(body.amenities)),
-        JSON.stringify(parseJSON(body.activities)),
-        JSON.stringify(parseJSON(body.food)),
-        JSON.stringify(parseJSON(body.things_to_know))
+        JSON.stringify(parseJSON(clean(body.amenities))),
+        JSON.stringify(parseJSON(clean(body.activities))),
+        JSON.stringify(parseJSON(clean(body.food))),
+        JSON.stringify(parseJSON(clean(body.things_to_know)))
       ]
     );
 
@@ -156,7 +162,6 @@ exports.createTour = async (req, res) => {
 //
 exports.updateTour = async (req, res) => {
   try {
-
     const { id } = req.params;
     const body = req.body;
     const files = req.files || {};
@@ -165,8 +170,6 @@ exports.updateTour = async (req, res) => {
     if (!rows.length) return res.status(404).json({ message: "Tour not found" });
 
     const tour = rows[0];
-
-    // ===== SANITIZE (undefined -> null) =====
     const clean = (v) => (v === undefined || v === "" ? null : v);
 
     let mainImage = tour.main_image;
@@ -199,15 +202,15 @@ exports.updateTour = async (req, res) => {
         clean(body.location),
         clean(body.adult_price),
         clean(body.child_price),
-        mainImage,
+        clean(mainImage),
         JSON.stringify(gallery),
-        JSON.stringify(parseJSON(body.amenities)),
-        JSON.stringify(parseJSON(body.activities)),
-        JSON.stringify(parseJSON(body.food)),
-        JSON.stringify(parseJSON(body.things_to_know)),
+        JSON.stringify(parseJSON(clean(body.amenities))),
+        JSON.stringify(parseJSON(clean(body.activities))),
+        JSON.stringify(parseJSON(clean(body.food))),
+        JSON.stringify(parseJSON(clean(body.things_to_know))),
         id
       ]
-    );
+    );  
 
     res.json({ message: "Tour updated" });
 
@@ -216,7 +219,7 @@ exports.updateTour = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
-//
+
 // ===== DELETE TOUR =====
 //
 exports.deleteTour = async (req, res) => {
