@@ -11,6 +11,7 @@ const featureRoutes = require('./routes/featureroutes');
 const tourRoutes = require("./routes/tourRoutes");
 const itineraryRoutes = require("./routes/itineraryRoutes");
 const categoryRoutes = require("./routes/categories");
+const bookingRoutes = require("./routes/bookingRoutes");
 
 const app = express();
 
@@ -21,11 +22,13 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/auth', authRoutes);
-app.use('/admin', adminRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/features', featureRoutes);
 app.use('/api/tours', tourRoutes);
 app.use("/api/itinerary", itineraryRoutes);
 app.use("/api/categories", categoryRoutes);
+app.use("/api/bookings", bookingRoutes);
+
 app.get('/', (req, res) => {
   res.json({ message: "Backend Running" });
 });
