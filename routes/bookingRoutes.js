@@ -1,7 +1,7 @@
 // routes/bookingRoutes.js
 const express = require("express");
 const router = express.Router();
-const { verifyToken } = require("../middleware/auth"); // Only import verifyToken
+const { verifyToken } = require("../middleware/authMiddleware"); // Only import verifyToken
 const bookingController = require("../controllers/bookingController");
 
 // Create a dummy admin middleware that just passes through

@@ -1,39 +1,76 @@
-// middleware/auth.js
+const express = require("express");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
+const pool = require("../config/db");
 
-const verifyToken = (req, res, next) => {
+const router = express.Router();
+
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+router.post("/google", async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-      return res.status(401).json({ message: "No token provided" });
-    }
-
-    const token = authHeader.split(" ")[1];
+    const { token } = req.body;
 
     if (!token) {
-      return res.status(401).json({ message: "Invalid token format" });
+      return res.status(400).json({ message: "Google token missing" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    console.error("Auth error:", err.message);
-    res.status(401).json({ message: "Invalid token" });
+    // 1️⃣ Verify Google token
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const { sub, email, name, picture, email_verified } = payload;
+
+    if (!email_verified) {
+      return res.status(400).json({ message: "Email not verified" });
+    }
+
+    // 2️⃣ Check if user exists
+    const [rows] = await pool.execute(
+      "SELECT * FROM users WHERE email = ?",
+      [email]
+    );
+
+    let user;
+
+    if (rows.length === 0) {
+      // 3️⃣ Create new user
+      const [result] = await pool.execute(
+        "INSERT INTO users (google_id, name, email, profile_pic, role) VALUES (?, ?, ?, ?, ?)",
+        [sub, name, email, picture, "user"]
+      );
+
+      user = {
+        id: result.insertId,
+        email,
+        role: "user",
+      };
+    } else {
+      user = rows[0];
+    }
+
+    // 4️⃣ Generate JWT
+    const appToken = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(200).json({
+      message: "Google login successful",
+      token: appToken,
+      role: user.role,
+    });
+  } catch (error) {
+    console.error("Google Login Error:", error);
+    res.status(401).json({ message: "Invalid Google token" });
   }
-};
+});
 
-// Comment out or remove isAdmin
-// const isAdmin = (req, res, next) => {
-//   if (req.user && req.user.role === 'admin') {
-//     next();
-//   } else {
-//     return res.status(403).json({ message: "Admin access required" });
-//   }
-// };
-
-module.exports = {
-  verifyToken
-  // isAdmin // Remove this line
-};
+module.exports = router;

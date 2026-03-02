@@ -2,15 +2,10 @@ const express = require('express');
 const router = express.Router();
 
 const adminController = require('../controllers/adminController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { verifyToken, verifyAdmin } = require('../middleware/authMiddleware');
 
-// Dashboard
-router.get('/dashboard', authMiddleware, adminController.getDashboard);
-
-// Users list
-router.get('/users', authMiddleware, adminController.getUsers);
-
-// Admin profile
-router.get('/profile', authMiddleware, adminController.getAdminProfile);
+router.get('/dashboard', verifyToken, verifyAdmin, adminController.getDashboard);
+router.get('/users', verifyToken, verifyAdmin, adminController.getUsers);
+router.get('/profile', verifyToken, verifyAdmin, adminController.getAdminProfile);
 
 module.exports = router;
