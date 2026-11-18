@@ -1,303 +1,554 @@
+
 const db = require("../config/db");
 const { supabase } = require("../config/supabase");
-const { v4: uuidv4 } = require("uuid");
+const { randomUUID } = require("crypto");
 
-const BUCKET = "AINTHINAI";
+const BUCKET_NAME = "AINTHINAI";
 
-const parseJSON = (val) => {
-  if (!val) return [];
-  if (Array.isArray(val)) return val;
-  try { return JSON.parse(val); } catch { return []; }
-};
+// =====================================
+// HELPERS
+// =====================================
 
-//
-// ===== FEATURE MAP =====
-//
-const mapFeatures = async (ids = []) => {
-  if (!ids.length) return [];
+const parseJSON = (value, fallback = []) => {
+  if (!value) return fallback;
 
-  const placeholders = ids.map(() => "?").join(",");
-
-  const [rows] = await db.execute(
-    `SELECT id,title,description,image,type
-     FROM features WHERE id IN (${placeholders})`,
-    ids
-  );
-
-  return rows;
-};
-
-//
-// ===== LOAD ITINERARY =====
-//
-const loadItinerary = async (tourId) => {
-
-  const [days] = await db.execute(
-    `SELECT * FROM itinerary_days WHERE tour_id=? ORDER BY day_number`,
-    [tourId]
-  );
-
-  const result = [];
-
-  for (const day of days) {
-
-    const [acts] = await db.execute(
-      `SELECT * FROM itinerary_activities WHERE day_id=?`,
-      [day.id]
-    );
-
-    for (const act of acts) {
-
-      const [imgs] = await db.execute(
-        `SELECT image_url FROM itinerary_images WHERE activity_id=?`,
-        [act.id]
-      );
-
-      act.images = imgs.map(i => i.image_url);
-    }
-
-    result.push({
-      day: day.day_number,
-      activities: acts
-    });
+  if (Array.isArray(value) || typeof value === "object") {
+    return value;
   }
 
-  return result;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 };
 
-//
-// ===== IMAGE =====
-//
-const uploadImage = async (file) => {
+const getBooleanValue = (value) => {
+  return value === true || value === 1 || value === "1" ? 1 : 0;
+};
 
-  const fileName = `tour-${Date.now()}-${uuidv4()}`;
+const uploadToSupabase = async (file, folder = "attractions") => {
+  if (!file) return null;
+
+  if (!file.buffer) {
+    throw new Error(
+      "Uploaded file buffer is missing. Configure multer with memoryStorage()."
+    );
+  }
+
+  const extension = file.originalname.split(".").pop() || "jpg";
+  const fileName = `${folder}/${randomUUID()}.${extension}`;
 
   const { error } = await supabase.storage
-    .from(BUCKET)
+    .from(BUCKET_NAME)
     .upload(fileName, file.buffer, {
-      contentType: file.mimetype
+      contentType: file.mimetype,
+      upsert: false,
     });
 
-  if (error) throw new Error(error.message);
-
-  return `${process.env.SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${fileName}`;
-};
-
-const extractPath = (url) => {
-  if (!url) return null;
-  return url.split(`/${BUCKET}/`)[1];
-};
-
-const deleteImages = async (urls = []) => {
-  const paths = urls.map(extractPath).filter(Boolean);
-  if (paths.length) {
-    await supabase.storage.from(BUCKET).remove(paths);
+  if (error) {
+    throw error;
   }
+
+  const { data } = supabase.storage
+    .from(BUCKET_NAME)
+    .getPublicUrl(fileName);
+
+  return data.publicUrl;
 };
 
-//
-// ===== CREATE TOUR =====
-//
-//
-// ===== CREATE TOUR =====
-//
+const getUploadedFiles = (req) => {
+  const mainImage = req.files?.main_image?.[0] || null;
+  const galleryImages = req.files?.gallery_images || [];
+
+  return { mainImage, galleryImages };
+};
+
+const getGalleryArray = (value) => {
+  const parsed = parseJSON(value, []);
+  return Array.isArray(parsed) ? parsed : [];
+};
+
+// =====================================
+// CREATE ATTRACTION
+// =====================================
+
 exports.createTour = async (req, res) => {
   try {
-    const body = req.body;
-    const files = req.files || {};
-    const id = uuidv4();
+    const {
+      category_id,
+      title,
+      place,
+      description,
+      adult_price,
+      child_price,
+      amenities,
+      activities,
+      food,
+      things_to_know,
+      state,
+      district,
+      location,
+      is_new,
+    } = req.body;
 
-    const clean = (v) => (v === undefined || v === "" ? null : v);
-
-    // Upload main image
-    let mainImage = null;
-    if (files.main_image) {
-      mainImage = await uploadImage(files.main_image[0]);
+    if (!category_id || !title) {
+      return res.status(400).json({
+        message: "Category and attraction title are required",
+      });
     }
 
-    // Upload gallery images
-    let gallery = [];
-    if (files.gallery_images) {
-      for (const file of files.gallery_images) {
-        gallery.push(await uploadImage(file));
-      }
+    const { mainImage, galleryImages } = getUploadedFiles(req);
+
+    let mainImageUrl = null;
+    const galleryImageUrls = [];
+
+    if (mainImage) {
+      mainImageUrl = await uploadToSupabase(mainImage);
     }
 
-    await db.execute(
-      `INSERT INTO tours
-      (id,category_id,title,place,state,district,description,location,
-       adult_price,child_price,main_image,gallery_images,
-       amenities,activities,food,things_to_know)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    for (const file of galleryImages) {
+      const imageUrl = await uploadToSupabase(file, "attractions/gallery");
+      galleryImageUrls.push(imageUrl);
+    }
+
+    const [sortRows] = await db.execute(
+      "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM tours"
+    );
+
+    const sortOrder = sortRows[0].next_order;
+
+    const id = randomUUID();
+
+    const [result] = await db.execute(
+      `INSERT INTO tours (
+        id,
+        category_id,
+        title,
+        place,
+        description,
+        adult_price,
+        child_price,
+        amenities,
+        activities,
+        food,
+        things_to_know,
+        state,
+        district,
+        location,
+        main_image,
+        gallery_images,
+        is_new,
+        sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        clean(body.category_id),
-        clean(body.title),
-        clean(body.place),
-        clean(body.state),
-        clean(body.district),
-        clean(body.description),
-        clean(body.location),
-        clean(body.adult_price),
-        clean(body.child_price),
-        clean(mainImage),
-        JSON.stringify(gallery),
-        JSON.stringify(parseJSON(clean(body.amenities))),
-        JSON.stringify(parseJSON(clean(body.activities))),
-        JSON.stringify(parseJSON(clean(body.food))),
-        JSON.stringify(parseJSON(clean(body.things_to_know)))
+        category_id,
+        title,
+        place || "",
+        description || "",
+        adult_price || 0,
+        child_price || 0,
+        JSON.stringify(parseJSON(amenities)),
+        JSON.stringify(parseJSON(activities)),
+        JSON.stringify(parseJSON(food)),
+        JSON.stringify(parseJSON(things_to_know)),
+        state || "",
+        district || "",
+        location || "",
+        mainImageUrl,
+        JSON.stringify(galleryImageUrls),
+        getBooleanValue(is_new),
+        sortOrder,
       ]
     );
 
-    res.json({ message: "Tour created", id });
+    res.status(201).json({
+      success: true,
+      message: "Attraction created successfully",
+      id,
+      is_new: getBooleanValue(is_new),
+      sort_order: sortOrder,
+    });
+  } catch (error) {
+    console.error("CREATE TOUR ERROR:", error);
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to create attraction",
+      error: error.message,
+    });
   }
 };
 
-//
-// ===== UPDATE TOUR =====
-//
+// =====================================
+// GET ALL ATTRACTIONS
+// =====================================
+
+exports.getTours = async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT *
+       FROM tours
+       ORDER BY sort_order ASC, created_at DESC`
+    );
+
+    const tours = rows.map((tour) => ({
+      ...tour,
+      is_new: Number(tour.is_new) || 0,
+      amenities: parseJSON(tour.amenities),
+      activities: parseJSON(tour.activities),
+      food: parseJSON(tour.food),
+      things_to_know: parseJSON(tour.things_to_know),
+      gallery_images: getGalleryArray(tour.gallery_images),
+    }));
+
+    res.status(200).json(tours);
+  } catch (error) {
+    console.error("GET TOURS ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch attractions",
+      error: error.message,
+    });
+  }
+};
+
+// =====================================
+// GET SINGLE ATTRACTION
+// =====================================
+
+exports.getTourById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await db.execute(
+      "SELECT * FROM tours WHERE id = ?",
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        message: "Attraction not found",
+      });
+    }
+
+    const tour = rows[0];
+
+    res.status(200).json({
+      ...tour,
+      is_new: Number(tour.is_new) || 0,
+      amenities: parseJSON(tour.amenities),
+      activities: parseJSON(tour.activities),
+      food: parseJSON(tour.food),
+      things_to_know: parseJSON(tour.things_to_know),
+      gallery_images: getGalleryArray(tour.gallery_images),
+    });
+  } catch (error) {
+    console.error("GET TOUR ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch attraction",
+      error: error.message,
+    });
+  }
+};
+
+// =====================================
+// UPDATE ATTRACTION
+// =====================================
+
 exports.updateTour = async (req, res) => {
   try {
     const { id } = req.params;
-    const body = req.body;
-    const files = req.files || {};
 
-    const [rows] = await db.execute("SELECT * FROM tours WHERE id=?", [id]);
-    if (!rows.length) return res.status(404).json({ message: "Tour not found" });
+    const [existingRows] = await db.execute(
+      "SELECT * FROM tours WHERE id = ?",
+      [id]
+    );
 
-    const tour = rows[0];
-    const clean = (v) => (v === undefined || v === "" ? null : v);
-
-    let mainImage = tour.main_image;
-    let gallery = parseJSON(tour.gallery_images);
-
-    if (files.main_image) {
-      await deleteImages([tour.main_image]);
-      mainImage = await uploadImage(files.main_image[0]);
+    if (existingRows.length === 0) {
+      return res.status(404).json({
+        message: "Attraction not found",
+      });
     }
 
-    if (files.gallery_images) {
-      for (const file of files.gallery_images) {
-        gallery.push(await uploadImage(file));
-      }
+    const existing = existingRows[0];
+
+    const {
+      category_id,
+      title,
+      place,
+      description,
+      adult_price,
+      child_price,
+      amenities,
+      activities,
+      food,
+      things_to_know,
+      state,
+      district,
+      location,
+      is_new,
+    } = req.body;
+
+    const { mainImage, galleryImages } = getUploadedFiles(req);
+
+    // Keep old main image if no new image is uploaded.
+    let mainImageUrl = existing.main_image;
+
+    if (mainImage) {
+      mainImageUrl = await uploadToSupabase(mainImage);
     }
+
+    // Keep existing gallery images and append new uploads.
+    let galleryImageUrls = getGalleryArray(existing.gallery_images);
+
+    for (const file of galleryImages) {
+      const imageUrl = await uploadToSupabase(
+        file,
+        "attractions/gallery"
+      );
+
+      galleryImageUrls.push(imageUrl);
+    }
+
+    const updatedIsNew =
+      is_new !== undefined
+        ? getBooleanValue(is_new)
+        : Number(existing.is_new) || 0;
 
     await db.execute(
       `UPDATE tours SET
-        category_id=?,title=?,place=?,state=?,district=?,description=?,location=?,
-        adult_price=?,child_price=?,main_image=?,gallery_images=?,
-        amenities=?,activities=?,food=?,things_to_know=?
-       WHERE id=?`,
+        category_id = ?,
+        title = ?,
+        place = ?,
+        description = ?,
+        adult_price = ?,
+        child_price = ?,
+        amenities = ?,
+        activities = ?,
+        food = ?,
+        things_to_know = ?,
+        state = ?,
+        district = ?,
+        location = ?,
+        main_image = ?,
+        gallery_images = ?,
+        is_new = ?
+      WHERE id = ?`,
       [
-        clean(body.category_id),
-        clean(body.title),
-        clean(body.place),
-        clean(body.state),
-        clean(body.district),
-        clean(body.description),
-        clean(body.location),
-        clean(body.adult_price),
-        clean(body.child_price),
-        clean(mainImage),
-        JSON.stringify(gallery),
-        JSON.stringify(parseJSON(clean(body.amenities))),
-        JSON.stringify(parseJSON(clean(body.activities))),
-        JSON.stringify(parseJSON(clean(body.food))),
-        JSON.stringify(parseJSON(clean(body.things_to_know))),
-        id
+        category_id ?? existing.category_id,
+        title ?? existing.title,
+        place ?? existing.place,
+        description ?? existing.description,
+        adult_price ?? existing.adult_price,
+        child_price ?? existing.child_price,
+        JSON.stringify(
+          amenities !== undefined
+            ? parseJSON(amenities)
+            : parseJSON(existing.amenities)
+        ),
+        JSON.stringify(
+          activities !== undefined
+            ? parseJSON(activities)
+            : parseJSON(existing.activities)
+        ),
+        JSON.stringify(
+          food !== undefined
+            ? parseJSON(food)
+            : parseJSON(existing.food)
+        ),
+        JSON.stringify(
+          things_to_know !== undefined
+            ? parseJSON(things_to_know)
+            : parseJSON(existing.things_to_know)
+        ),
+        state ?? existing.state,
+        district ?? existing.district,
+        location ?? existing.location,
+        mainImageUrl,
+        JSON.stringify(galleryImageUrls),
+        updatedIsNew,
+        id,
       ]
-    );  
+    );
 
-    res.json({ message: "Tour updated" });
+    res.status(200).json({
+      success: true,
+      message: "Attraction updated successfully",
+      id,
+      is_new: updatedIsNew,
+    });
+  } catch (error) {
+    console.error("UPDATE TOUR ERROR:", error);
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to update attraction",
+      error: error.message,
+    });
   }
 };
 
-// ===== DELETE TOUR =====
-//
-exports.deleteTour = async (req, res) => {
-  try {
+// =====================================
+// TOGGLE NEW ATTRACTION STATUS
+// =====================================
 
+exports.toggleNewAttraction = async (req, res) => {
+  try {
     const { id } = req.params;
+    const { is_new } = req.body;
 
-    const [rows] = await db.execute("SELECT * FROM tours WHERE id=?", [id]);
-    if (!rows.length) return res.json({ message: "Already deleted" });
-
-    const tour = rows[0];
-    const gallery = parseJSON(tour.gallery_images);
-
-    await deleteImages([tour.main_image, ...gallery]);
-
-    await db.execute("DELETE FROM tours WHERE id=?", [id]);
-
-    res.json({ message: "Tour deleted" });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
-  }
-};
-
-//
-// ===== GET ALL (WITH CATEGORY NAME) =====
-//
-exports.getTours = async (req, res) => {
-  try {
-
-    const [rows] = await db.execute(`
-      SELECT t.*, c.name AS category_name
-      FROM tours t
-      LEFT JOIN categories c ON t.category_id = c.id
-      ORDER BY t.created_at DESC
-    `);
-
-    res.json(rows);
-
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
-
-//
-// ===== GET BY ID =====
-//
-exports.getTourById = async (req, res) => {
-  try {
-
-    const [rows] = await db.execute(`
-      SELECT t.*, c.name AS category_name
-      FROM tours t
-      LEFT JOIN categories c ON t.category_id = c.id
-      WHERE t.id=?
-    `, [req.params.id]);
-
-    if (!rows.length) {
-      return res.status(404).json({ message: "Tour not found" });
+    if (![0, 1, "0", "1", true, false].includes(is_new)) {
+      return res.status(400).json({
+        message: "Invalid attraction status",
+      });
     }
 
-    const t = rows[0];
+    const status = getBooleanValue(is_new);
 
-    const itinerary = await loadItinerary(t.id);
+    const [result] = await db.execute(
+      "UPDATE tours SET is_new = ? WHERE id = ?",
+      [status, id]
+    );
 
-    res.json({
-      ...t,
-      amenities: await mapFeatures(parseJSON(t.amenities)),
-      activities: await mapFeatures(parseJSON(t.activities)),
-      food: await mapFeatures(parseJSON(t.food)),
-      things_to_know: await mapFeatures(parseJSON(t.things_to_know)),
-      gallery_images: parseJSON(t.gallery_images),
-      itinerary
+    if (result.affectedRows === 0) {
+      const [rows] = await db.execute(
+        "SELECT id FROM tours WHERE id = ?",
+        [id]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({
+          message: "Attraction not found",
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "New Attraction status updated",
+      id,
+      is_new: status,
+    });
+  } catch (error) {
+    console.error("TOGGLE NEW ATTRACTION ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update attraction status",
+      error: error.message,
+    });
+  }
+};
+
+// =====================================
+// REORDER ATTRACTIONS
+// =====================================
+
+exports.reorderTours = async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return res.status(400).json({
+        message: "orderedIds must be a non-empty array",
+      });
+    }
+
+    const uniqueIds = [...new Set(orderedIds.map(String))];
+
+    if (uniqueIds.length !== orderedIds.length) {
+      return res.status(400).json({
+        message: "Duplicate attraction IDs are not allowed",
+      });
+    }
+
+    const placeholders = uniqueIds.map(() => "?").join(",");
+
+    const [existingRows] = await db.execute(
+      `SELECT id FROM tours WHERE id IN (${placeholders})`,
+      uniqueIds
+    );
+
+    if (existingRows.length !== uniqueIds.length) {
+      return res.status(400).json({
+        message: "One or more attraction IDs are invalid",
+      });
+    }
+
+    const caseStatements = uniqueIds
+      .map(() => "WHEN ? THEN ?")
+      .join(" ");
+
+    const caseParams = [];
+
+    uniqueIds.forEach((id, index) => {
+      caseParams.push(id, index + 1);
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    const updateSql = `
+      UPDATE tours
+      SET sort_order = CASE id
+        ${caseStatements}
+        ELSE sort_order
+      END
+      WHERE id IN (${placeholders})
+    `;
+
+    await db.execute(updateSql, [
+      ...caseParams,
+      ...uniqueIds,
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Attraction order updated successfully",
+    });
+  } catch (error) {
+    console.error("REORDER TOURS ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to reorder attractions",
+      error: error.message,
+    });
+  }
+};
+
+// =====================================
+// DELETE ATTRACTION
+// =====================================
+
+exports.deleteTour = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [result] = await db.execute(
+      "DELETE FROM tours WHERE id = ?",
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Attraction not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Attraction deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE TOUR ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete attraction",
+      error: error.message,
+    });
   }
 };
